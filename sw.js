@@ -1,4 +1,4 @@
-const CACHE="painel-v39";
+const CACHE="painel-v41";
 self.addEventListener("install",e=>self.skipWaiting());
 self.addEventListener("activate",e=>e.waitUntil(self.clients.claim()));
 self.addEventListener("fetch",e=>{
