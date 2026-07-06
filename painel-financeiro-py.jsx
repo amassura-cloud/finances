@@ -11,7 +11,7 @@ const store = {
 };
 const KEY = "finance-data-py";
 const KEY_OVR = "finance-budgets-override-2";
-const SEED_VERSION = 43;
+const SEED_VERSION = 44;
 
 const brl = (n)=> new Intl.NumberFormat("pt-BR",{style:"currency",currency:"BRL",minimumFractionDigits:2}).format(isFinite(n)?n:0);
 const brl0 = (n)=> new Intl.NumberFormat("pt-BR",{style:"currency",currency:"BRL",maximumFractionDigits:0}).format(isFinite(n)?n:0);
@@ -46,11 +46,25 @@ const statusColor=(r)=> r>1?C.over : r>=0.85?C.caution : C.good;
 const FIXAS=["Pensão filhos","Studio SP (fixas)","Consórcios","Plano de Saúde","Apt Rio (fixas)","Terapia/Psiquiatria","Empregada (Rio)","Contadora","Mãe (apoio financeiro)","Gabi em Barcelona"];
 const isFixa=(c)=>FIXAS.includes(c);
 
-function buildSeed(){
-  const expenses = SEED.recs.map(r=>({id:uid(),date:r.d,description:r.n,amount:r.a,category:r.c,proj:r.p?1:0,gmail:r.gmail?1:0}));
-  const incomes = (SEED.incomes||[]).map(r=>({id:uid(),date:r.d,description:r.n,amount:r.a,source:r.src}));
-  const projects = (SEED.projects||[]).map(r=>({id:uid(),date:r.d,item:r.item||r.n,amount:r.a,kind:r.kind||"Outros"}));
-  return {expenses, incomes, projects, budgets:SEED.budgets, categories:SEED.cats, meta:SEED.meta||null, sync:SEED.gmail_sync||null};
+function buildSeed(src){
+  const S = src || SEED;
+  const expenses = (S.recs||[]).map(r=>({id:uid(),date:r.d,description:r.n,amount:r.a,category:r.c,proj:r.p?1:0,gmail:r.gmail?1:0}));
+  const incomes = (S.incomes||[]).map(r=>({id:uid(),date:r.d,description:r.n,amount:r.a,source:r.src}));
+  const projects = (S.projects||[]).map(r=>({id:uid(),date:r.d,item:r.item||r.n,amount:r.a,kind:r.kind||"Outros"}));
+  return {expenses, incomes, projects, budgets:S.budgets, categories:S.cats, meta:S.meta||null, sync:S.gmail_sync||null};
+}
+
+// Busca painel-dados.json do repositório; se falhar, usa o SEED embutido (fallback à prova de falha).
+async function fetchData(){
+  try{
+    const r = await fetch("painel-dados.json", {cache:"no-store"});
+    if(!r.ok) return null;
+    const j = await r.json();
+    if(!j || !Array.isArray(j.recs)) return null;
+    // versão = data de modificação do arquivo (muda sozinha a cada commit)
+    const ver = r.headers.get("last-modified") || String((j.recs||[]).length);
+    return {src:j, ver:"json:"+ver};
+  }catch(e){ return null; }
 }
 
 const Icon=({n,c,s=22})=>{
@@ -103,11 +117,14 @@ export default function App(){
 
   useEffect(()=>{(async()=>{
     const raw=await store.get(KEY);
-    const fresh=buildSeed(); fresh.__v=SEED_VERSION;
+    // Fonte primária: painel-dados.json do repo. Fallback: SEED embutido no bundle.
+    const ext=await fetchData();
+    const ver = ext ? ext.ver : ("seed:"+SEED_VERSION);
+    const fresh=buildSeed(ext?ext.src:null); fresh.__v=ver;
     let d=fresh;
     if(raw){ try{
       const p=JSON.parse(raw); if(!p.incomes)p.incomes=[];
-      if(p.__v===SEED_VERSION){ d=p; } else { d=fresh; }
+      if(p.__v===ver){ d=p; } else { d=fresh; }
     }catch(e){ d=fresh; } }
     try{ const ovrRaw=await store.get(KEY_OVR); if(ovrRaw){ const ovr=JSON.parse(ovrRaw);
       for(const k in ovr){ if(!d.budgets) d.budgets={}; d.budgets[k]=ovr[k]; if(d.categories&&!d.categories.includes(k)) d.categories.push(k); } } }catch(e){}
@@ -117,7 +134,11 @@ export default function App(){
   const persist=async(next)=>{ setData(next); await store.set(KEY,JSON.stringify(next)); };
 
   const monthExpenses=useMemo(()=>{ if(!data) return [];
-    return data.expenses.filter(e=>monthKey(e.date)===month).sort((a,b)=>a.date<b.date?1:-1);
+    const raw=data.expenses.filter(e=>monthKey(e.date)===month);
+    // Categorias fixas com pagamento real no mês: o provisionado ("fixo previsto") é suprimido
+    const realFixCats=new Set(raw.filter(e=>!e.proj && FIXAS.includes(e.category)).map(e=>e.category));
+    return raw.filter(e=>!(e.proj && FIXAS.includes(e.category) && realFixCats.has(e.category)))
+      .sort((a,b)=>a.date<b.date?1:-1);
   },[data,month]);
 
   if(!data) return <Shell tab={tab} setTab={setTab}><div style={{padding:"80px 0",textAlign:"center",color:C.muted,fontFamily:"Inter,sans-serif"}}>Carregando…</div></Shell>;
